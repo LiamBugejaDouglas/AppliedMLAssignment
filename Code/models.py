@@ -1,9 +1,8 @@
-from transformers import BertForSequenceClassification, BertConfig
+from transformers import BertForSequenceClassification, BertConfig, AutoModel, BertTokenizer
 import tensorflow as tf
 from keras.utils import pad_sequences
 from keras.models import load_model
 from keras.preprocessing.text import tokenizer_from_json
-from transformers import BertTokenizer
 import json
 import os
 import torch
@@ -42,36 +41,61 @@ dir_path = os.path.dirname(os.path.realpath(__file__))
 model_path = os.path.join(dir_path, 'best_model.pth')
 
 bert_model = BertForSequenceClassification.from_pretrained('bert-base-uncased')
-# bert_model = AutoModel.from_pretrained('bert-base-uncased')
 bert_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
 bert_model.load_state_dict(torch.load(
     model_path, map_location=torch.device('cpu')))
 
+# Load the best model statemodel.load_state_dict(torch.load('best_model.pth'))
+bert_model.eval()
 
-def preprocess_and_predict_bert(news_text, model, tokenizer):
+# Move model to device (GPU if available)
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+bert_model.to(device)
+
+
+def preprocess_and_predict_bert(news_text, bert_model, bert_tokenizer, device):
     max_length = 20
 
-    tokenized_data = tokenizer.batch_encode_plus(
-        news_text, max_length=max_length, pad_to_max_length=True, truncation=True, return_tensors='pt')
+    # Tokenize the input text
+    tokenized_text = bert_tokenizer.encode_plus(
+        news_text,
+        max_length=max_length,
+        padding='max_length',
+        truncation=True,
+        return_tensors='pt'
+    )
 
-    input_ids = tokenized_data['input_ids'].to(model.device)
-    attention_mask = tokenized_data['attention_mask'].to(model.device)
+    # Move data to the device (GPU or CPU)
+    input_ids = tokenized_text['input_ids'].to(device)
+    attention_mask = tokenized_text['attention_mask'].to(device)
 
+    # Get model predictions
     with torch.no_grad():
-        outputs = model(input_ids, attention_mask=attention_mask)
-    prediction = torch.sigmoid(outputs.logits)
-    return "Fake News" if prediction[0, 0] > 0.5 else "Real News"
+        outputs = bert_model(input_ids=input_ids,
+                             attention_mask=attention_mask)
+        logits = outputs.logits
+
+    # Convert logits to probabilities using softmax
+    probabilities = torch.nn.functional.softmax(
+        logits, dim=1).squeeze().cpu().numpy()
+
+    # Return both the predicted label and the raw probabilities
+    predicted_label = "Real News" if torch.argmax(
+        logits, dim=1).item() == 0 else "Fake News"
+    # Assuming index 1 is for "Fake News"
+    raw_prediction_value = probabilities[1]
+    return predicted_label, raw_prediction_value
 
 
 def preprocess_and_predict_keras(news_text, model, tokenizer, max_length=150):
     sequence = tokenizer.texts_to_sequences([news_text])
-    print("Sequence:", sequence)
     padded = pad_sequences(sequence, maxlen=max_length)
-    print("Padded sequence:", padded)
     prediction = model.predict(padded)
-    print("Raw prediction:", prediction)
-    return "Fake News" if prediction[0] > 0.5 else "Real News"
+    raw_prediction_probability = prediction[0][0]
+    predicted_label = "Fake News" if raw_prediction_probability > 0.5 else "Real News"
+
+    return predicted_label, raw_prediction_probability
 
 
 def startRNN(news_text):
@@ -83,4 +107,6 @@ def startLSTM(news_text):
 
 
 def startBERT(news_text):
-    return preprocess_and_predict_bert(news_text, bert_model, bert_tokenizer)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    bert_model.to(device)
+    return preprocess_and_predict_bert(news_text, bert_model, bert_tokenizer, device)
